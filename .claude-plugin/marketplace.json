@@ -1,0 +1,21 @@
+{
+  "name": "grok-cc",
+  "owner": {
+    "name": "TolyK"
+  },
+  "metadata": {
+    "description": "Use xAI's Grok Build CLI (grok) from inside Claude Code to delegate tasks, ask questions, and review code.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "grok",
+      "description": "Delegate tasks, ask one-shot questions, and review code with the Grok Build CLI from Claude Code.",
+      "version": "0.1.0",
+      "author": {
+        "name": "TolyK"
+      },
+      "source": "./plugins/grok"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "grok",
+  "version": "0.1.0",
+  "description": "Delegate tasks, ask one-shot questions, and review code with xAI's Grok Build CLI (grok) from Claude Code.",
+  "author": {
+    "name": "TolyK"
+  }
+}
