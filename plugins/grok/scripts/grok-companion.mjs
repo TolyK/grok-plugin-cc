@@ -83,10 +83,24 @@ const VALUE_FLAGS = new Set([
   "--timeout",
   "--base",
 ]);
+// Keys (sans leading dashes) accepted in `--key=value` form, split by whether
+// they take a value, so the `=` form gets the same validation as the spaced form.
+const BOOL_KEYS = new Set(["json", "write", "read-only", "resume", "continue"]);
+const VALUE_KEYS = new Set([
+  "model",
+  "m",
+  "effort",
+  "cwd",
+  "session-id",
+  "output-format",
+  "timeout",
+  "base",
+]);
 
 function parseArgs(argv) {
   const flags = {};
   const rest = [];
+  const errors = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--") {
@@ -96,10 +110,29 @@ function parseArgs(argv) {
     if (BOOL_FLAGS.has(a)) {
       flags[a.replace(/^-+/, "")] = true;
     } else if (VALUE_FLAGS.has(a)) {
-      flags[a.replace(/^-+/, "")] = argv[++i];
+      // A value flag must be followed by an actual value, not another flag
+      // (known or not) or the end of input — none of this tool's values are
+      // expected to start with "-", so a flag-looking token means the value is
+      // missing rather than something we should silently swallow.
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith("-")) {
+        errors.push(`Missing value for ${a}`);
+      } else {
+        flags[a.replace(/^-+/, "")] = next;
+        i++;
+      }
     } else if (a.startsWith("--") && a.includes("=")) {
       const [k, v] = a.slice(2).split(/=(.*)/s);
-      flags[k] = v;
+      if (VALUE_KEYS.has(k)) {
+        // Same validation as the spaced form: reject empty/flag-looking values.
+        if (v === "" || v.startsWith("-")) errors.push(`Missing value for --${k}`);
+        else flags[k] = v;
+      } else if (BOOL_KEYS.has(k)) {
+        flags[k] = true;
+      } else {
+        // Surface unrecognized flags as prompt text rather than dropping them.
+        rest.push(a);
+      }
     } else {
       rest.push(a);
     }
@@ -107,7 +140,15 @@ function parseArgs(argv) {
   // normalize aliases
   if (flags.m && !flags.model) flags.model = flags.m;
   if (flags.c || flags.continue) flags.resume = true;
-  return { flags, rest };
+  return { flags, rest, errors };
+}
+
+// Resolve --timeout to a sane millisecond value: a finite positive integer of
+// seconds, capped at one hour. Bad/missing values fall back to 600s.
+function resolveTimeoutMs(flags) {
+  const n = Number(flags.timeout);
+  if (!Number.isFinite(n) || n <= 0) return 600 * 1000;
+  return Math.min(Math.floor(n), 3600) * 1000;
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +236,9 @@ function runGrok(grokArgs, { timeoutMs, cwd }) {
         code: killed ? 124 : code ?? 0,
         stdout: stripAnsi(out).trim(),
         stderr: denoiseStderr(err),
+        // Unfiltered (ANSI-stripped) stderr, used on failure so genuine errors
+        // (e.g. auth failures) are never hidden by the noise filter.
+        stderrRaw: stripAnsi(err).trim(),
         timedOut: killed,
       });
     });
@@ -317,14 +361,37 @@ function ensureReady() {
   }
 }
 
+// Choose what to show the user. Prefer stdout (the answer). On a nonzero exit
+// with no stdout, show the raw (unfiltered) stderr so real errors — including
+// auth failures the noise filter would otherwise drop — are surfaced.
+function pickBody(res) {
+  if (res.stdout) return res.stdout;
+  if (res.code !== 0) {
+    return (
+      res.stderrRaw ||
+      res.stderr ||
+      `(grok exited with code ${res.code} and produced no output)`
+    );
+  }
+  return res.stderr || "(no output returned by grok)";
+}
+
+// Prepended to read-only prompts so that on platforms where grok's sandbox
+// cannot be applied (and the run is therefore unsandboxed), there is still a
+// best-effort instruction not to modify files.
+const READ_ONLY_GUARD =
+  "IMPORTANT: This is a read-only request. Do not modify, create, or delete any " +
+  "files, and do not run commands that change state. Only read what you need and respond.\n\n";
+
 async function cmdRun(flags, rest, { write, label }) {
   ensureReady();
-  const prompt = rest.join(" ").trim();
+  let prompt = rest.join(" ").trim();
   if (!prompt) {
     process.stdout.write(`❌ No prompt provided for ${label}.\n`);
     return 1;
   }
-  const timeoutMs = (Number(flags.timeout) || 600) * 1000;
+  if (!write) prompt = READ_ONLY_GUARD + prompt;
+  const timeoutMs = resolveTimeoutMs(flags);
   const args = buildGrokArgs(prompt, flags, { write });
   const res = await runGrok(args, { timeoutMs, cwd: flags.cwd });
 
@@ -334,13 +401,12 @@ async function cmdRun(flags, rest, { write, label }) {
   }
   if (res.timedOut) {
     process.stdout.write(
-      `⏱️  Grok run timed out after ${flags.timeout || 600}s.\n` +
+      `⏱️  Grok run timed out after ${Math.round(timeoutMs / 1000)}s.\n` +
         (res.stdout ? `\nPartial output:\n${res.stdout}\n` : "")
     );
     return 124;
   }
-  const body = res.stdout || res.stderr || "(no output returned by grok)";
-  process.stdout.write(body + "\n");
+  process.stdout.write(pickBody(res) + "\n");
   return res.code;
 }
 
@@ -384,7 +450,7 @@ async function cmdReview(flags, rest) {
     .filter(Boolean)
     .join("\n");
 
-  const timeoutMs = (Number(flags.timeout) || 600) * 1000;
+  const timeoutMs = resolveTimeoutMs(flags);
   const args = buildGrokArgs(prompt, flags, { write: false });
   const res = await runGrok(args, { timeoutMs, cwd: flags.cwd });
 
@@ -392,7 +458,14 @@ async function cmdReview(flags, rest) {
     process.stdout.write(`❌ Failed to launch \`grok\`: ${res.stderr}\n`);
     return 127;
   }
-  process.stdout.write((res.stdout || res.stderr || "(no output)") + "\n");
+  if (res.timedOut) {
+    process.stdout.write(
+      `⏱️  Grok review timed out after ${Math.round(timeoutMs / 1000)}s.\n` +
+        (res.stdout ? `\nPartial output:\n${res.stdout}\n` : "")
+    );
+    return 124;
+  }
+  process.stdout.write(pickBody(res) + "\n");
   return res.code;
 }
 
@@ -402,7 +475,12 @@ async function cmdReview(flags, rest) {
 
 async function main() {
   const [sub, ...raw] = process.argv.slice(2);
-  const { flags, rest } = parseArgs(raw);
+  const { flags, rest, errors } = parseArgs(raw);
+
+  if (errors.length) {
+    process.stdout.write("❌ " + errors.join("; ") + "\n");
+    return 2;
+  }
 
   // --read-only overrides --write; task defaults to write-capable.
   const writeForTask = flags["read-only"] ? false : true;

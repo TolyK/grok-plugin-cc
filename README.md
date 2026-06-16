@@ -84,7 +84,7 @@ The companion (`grok-companion.mjs <ask|task|review|setup>`) accepts:
 | `--timeout <seconds>` | Hard-kill the run after N seconds (default 600). |
 | `--base <ref>` | (`review` only) diff against `<ref>` instead of the working tree. |
 
-> **Note on `grok` flags:** the Grok CLI is young and its flags may shift between releases. The companion relies on the stable headless `-p` mode plus documented headless-only flags (`--permission-mode`, `--disallowed-tools`, `--effort`, `--output-format`). If a flag is rejected by your `grok` version, update the companion or drop the flag. PRs welcome.
+> **Note on `grok` flags:** the Grok CLI is young and its flags may shift between releases. The companion relies on the stable headless `-p` mode plus `--always-approve`, `--sandbox read-only` (for read-only modes), `--effort`, and `--output-format`. If a flag is rejected by your `grok` version, update the companion or drop the flag. PRs welcome.
 
 ## Layout
 
